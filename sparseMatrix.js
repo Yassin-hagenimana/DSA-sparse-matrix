@@ -1,10 +1,12 @@
+// sparseMatrix.js
 const fs = require('fs');
+const prompt = require('prompt-sync')(); // For user input
 
 class SparseMatrix {
     constructor(matrixFilePath = null, numRows = 0, numCols = 0) {
         this.rows = numRows;
         this.cols = numCols;
-        this.elements = new Map(); // (key: 'row,col', value: int)
+        this.elements = new Map(); // Stores non-zero values with key 'row,col'
 
         if (matrixFilePath) {
             this.loadFromFile(matrixFilePath);
@@ -27,56 +29,50 @@ class SparseMatrix {
 
     // Load the sparse matrix from a file
     loadFromFile(filePath) {
-        const data = fs.readFileSync(filePath, 'utf-8').split('\n').map(line => line.trim());
+        try {
+            const data = fs.readFileSync(filePath, 'utf-8').split('\n').map(line => line.trim());
 
-        for (let line of data) {
-            if (line.startsWith('rows=')) {
-                this.rows = parseInt(line.split('=')[1]);
-            } else if (line.startsWith('cols=')) {
-                this.cols = parseInt(line.split('=')[1]);
-            } else if (line.startsWith('(')) {
-                const [row, col, value] = line.replace(/[()]/g, '').split(',').map(Number);
-                this.setElement(row, col, value);
+            for (let line of data) {
+                if (line.startsWith('rows=')) {
+                    this.rows = parseInt(line.split('=')[1]);
+                    if (isNaN(this.rows)) {
+                        throw new Error("Invalid number of rows");
+                    }
+                } else if (line.startsWith('cols=')) {
+                    this.cols = parseInt(line.split('=')[1]);
+                    if (isNaN(this.cols)) {
+                        throw new Error("Invalid number of columns");
+                    }
+                } else if (line.startsWith('(') && line.endsWith(')')) {
+                    const [row, col, value] = line.slice(1, -1).split(',').map(Number);
+                    if ([row, col, value].some(num => isNaN(num))) {
+                        throw new Error("Input file has wrong format");
+                    }
+                    this.setElement(row, col, value);
+                } else if (line !== '') {
+                    // Non-empty line that doesn't match expected formats
+                    throw new Error("Input file has wrong format");
+                }
             }
+        } catch (err) {
+            throw new Error(`Error loading matrix from file '${filePath}': ${err.message}`);
         }
     }
 
     add(otherMatrix) {
-        if (this.rows !== otherMatrix.rows || this.cols !== otherMatrix.cols) {
-            throw new Error("Matrix dimensions do not match for addition");
-        }
+        this._validateDimensions(otherMatrix);
 
         const result = new SparseMatrix(null, this.rows, this.cols);
-
-        this.elements.forEach((value, key) => {
-            const [row, col] = key.split(',').map(Number);
-            result.setElement(row, col, value);
-        });
-
-        otherMatrix.elements.forEach((value, key) => {
-            const [row, col] = key.split(',').map(Number);
-            result.setElement(row, col, result.getElement(row, col) + value);
-        });
+        this._mergeMatrices(result, otherMatrix, (a, b) => a + b);
 
         return result;
     }
 
     subtract(otherMatrix) {
-        if (this.rows !== otherMatrix.rows || this.cols !== otherMatrix.cols) {
-            throw new Error("Matrix dimensions do not match for subtraction");
-        }
+        this._validateDimensions(otherMatrix);
 
         const result = new SparseMatrix(null, this.rows, this.cols);
-
-        this.elements.forEach((value, key) => {
-            const [row, col] = key.split(',').map(Number);
-            result.setElement(row, col, value);
-        });
-
-        otherMatrix.elements.forEach((value, key) => {
-            const [row, col] = key.split(',').map(Number);
-            result.setElement(row, col, result.getElement(row, col) - value);
-        });
+        this._mergeMatrices(result, otherMatrix, (a, b) => a - b);
 
         return result;
     }
@@ -90,13 +86,13 @@ class SparseMatrix {
 
         this.elements.forEach((value1, key1) => {
             const [i, k] = key1.split(',').map(Number);
-            otherMatrix.elements.forEach((value2, key2) => {
-                const [k2, j] = key2.split(',').map(Number);
-                if (k === k2) {
-                    const currentVal = result.getElement(i, j);
-                    result.setElement(i, j, currentVal + value1 * value2);
+            for (let col = 0; col < otherMatrix.cols; col++) {
+                const value2 = otherMatrix.getElement(k, col);
+                if (value2 !== 0) {
+                    const currentVal = result.getElement(i, col);
+                    result.setElement(i, col, currentVal + value1 * value2);
                 }
-            });
+            }
         });
 
         return result;
@@ -112,40 +108,67 @@ class SparseMatrix {
 
         fs.writeFileSync(filePath, output.join('\n'), 'utf-8');
     }
+
+    _validateDimensions(otherMatrix) {
+        if (this.rows !== otherMatrix.rows || this.cols !== otherMatrix.cols) {
+            throw new Error("Matrix dimensions do not match for this operation");
+        }
+    }
+
+    _mergeMatrices(result, otherMatrix, operation) {
+        this.elements.forEach((value, key) => {
+            result.elements.set(key, value);
+        });
+
+        otherMatrix.elements.forEach((value, key) => {
+            const existingValue = result.elements.get(key) || 0;
+            const newValue = operation(existingValue, value);
+            if (newValue !== 0) {
+                result.elements.set(key, newValue);
+            } else {
+                result.elements.delete(key);
+            }
+        });
+    }
 }
 
 // Main function to drive the program
-const main = async () => {
+const main = () => {
     try {
-        const prompt = require('prompt-sync')(); // For user input
         console.log("Select operation:\n1. Addition\n2. Subtraction\n3. Multiplication");
-        const choice = parseInt(prompt("Enter your choice: "), 10);
+        const choice = prompt("Enter your choice (1, 2, or 3): ");
+        const operation = { '1': 'add', '2': 'subtract', '3': 'multiply' }[choice];
 
-        const file1 = prompt("Enter the first input file path: ");
-        const file2 = prompt("Enter the second input file path: ");
+        if (!operation) {
+            console.error("Invalid choice");
+            return;
+        }
+
+        const file1 = prompt("Enter the first input file path: ").trim();
+        const file2 = prompt("Enter the second input file path: ").trim();
 
         const matrix1 = new SparseMatrix(file1);
         const matrix2 = new SparseMatrix(file2);
 
         let result;
 
-        switch (choice) {
-            case 1:
+        switch (operation) {
+            case 'add':
                 result = matrix1.add(matrix2);
                 break;
-            case 2:
+            case 'subtract':
                 result = matrix1.subtract(matrix2);
                 break;
-            case 3:
+            case 'multiply':
                 result = matrix1.multiply(matrix2);
                 break;
             default:
-                throw new Error("Invalid operation choice");
+                throw new Error("Invalid operation");
         }
 
-        const outputFile = 'result.txt';
+        const outputFile = "result.txt";
         result.saveToFile(outputFile);
-        console.log(`Result saved to ${outputFile}`);
+        console.log(`Operation successful, result saved to ${outputFile}`);
     } catch (error) {
         console.error("Error:", error.message);
     }
